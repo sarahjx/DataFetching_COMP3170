@@ -2,16 +2,15 @@ import { useState, useEffect } from 'react'
 import './App.css'
 import sampleBooks from './data/books.json'
 
-function Book({ title, author, image, publisher, price, published, pages, url, isSelected, onSelect, isOnLoan }) {
+function Book({ title, author, image, publisher, price, published, pages, url, isSelected, onSelect, isOnLoan, onViewDetails }) {
   const handleBookClick = () => {
     onSelect();
   };
 
-  const handleViewDetails = (e) => {
+  const handleViewDetailsClick = (e) => {
     e.stopPropagation();
-    e.preventDefault();
-    if (url) {
-      window.open(url, '_blank', 'noopener,noreferrer');
+    if (onViewDetails) {
+      onViewDetails();
     }
   };
 
@@ -27,19 +26,12 @@ function Book({ title, author, image, publisher, price, published, pages, url, i
         Published: {published || '2025'} • {pages || 499} pages
       </p>
       {price && <p className="price">{price}</p>}
-      {url ? (
-        <a 
-          href={url} 
-          className="learn-more" 
-          onClick={handleViewDetails}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          View Details
-        </a>
-      ) : (
-        <span className="learn-more">View Details</span>
-      )}
+      <button 
+        className="view-details-button" 
+        onClick={handleViewDetailsClick}
+      >
+        View Details
+      </button>
       {isOnLoan && <p className="loan-status">On Loan</p>}
     </div>
   )
@@ -175,7 +167,365 @@ function BookModal({ isOpen, onClose, onSaveBook, bookToEdit, mode }) {
   );
 }
 
-function LoanManagement({ books, loans, onAddLoan }) {
+function BookDetails({ book, onClose }) {
+  const [similarBooks, setSimilarBooks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const fetchSimilarBooks = async () => {
+      if (!book) return;
+      
+      setLoading(true);
+      setError(null);
+      
+      try {
+        // Extract meaningful keywords from title and author
+        const extractKeywords = (text) => {
+          if (!text) return [];
+          // Common words to exclude
+          const stopWords = ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'from', 'by', 'about', 'into', 'through', 'during', 'including', 'against', 'among', 'throughout', 'despite', 'towards', 'upon', 'concerning', 'to', 'of', 'in', 'for', 'on', 'at', 'by', 'with', 'about', 'into', 'through', 'during', 'under', 'over', 'after', 'before', 'above', 'below', 'up', 'down', 'out', 'off', 'away', 'back', 'along', 'around', 'across', 'behind', 'beyond', 'near', 'inside', 'outside', 'within', 'without'];
+          
+          return text
+            .toLowerCase()
+            .split(/[\s,.-]+/)
+            .filter(word => 
+              word.length > 2 && 
+              !stopWords.includes(word) &&
+              !/^\d+$/.test(word) // Exclude pure numbers
+            )
+            .slice(0, 3); // Take first 3 meaningful words
+        };
+        
+        // Get keywords from title and author
+        const titleKeywords = extractKeywords(book.title);
+        const authorKeywords = extractKeywords(book.author);
+        
+        // Combine keywords, prioritizing title keywords
+        const allKeywords = [...titleKeywords, ...authorKeywords];
+        const uniqueKeywords = [...new Set(allKeywords)];
+        
+        // Create multiple search queries with different keyword combinations
+        const searchQueries = [];
+        if (uniqueKeywords.length > 0) {
+          // Try with more keywords (up to 4)
+          searchQueries.push(uniqueKeywords.slice(0, 4).join(' '));
+          // Try with first 3 keywords
+          if (uniqueKeywords.length >= 3) {
+            searchQueries.push(uniqueKeywords.slice(0, 3).join(' '));
+          }
+          // Try with first 2 keywords
+          if (uniqueKeywords.length >= 2) {
+            searchQueries.push(uniqueKeywords.slice(0, 2).join(' '));
+          }
+          // Try with just the first keyword
+          searchQueries.push(uniqueKeywords[0]);
+        } else {
+          // Fallback to generic search
+          searchQueries.push('javascript');
+        }
+        
+        // Remove duplicates
+        const uniqueQueries = [...new Set(searchQueries)];
+        
+        console.log('Search keywords:', uniqueKeywords);
+        console.log('Search queries to try:', uniqueQueries);
+        
+        // Try each query until one succeeds
+        let data = null;
+        let lastError = null;
+        
+        for (const searchQuery of uniqueQueries) {
+          const searchQueryEncoded = encodeURIComponent(searchQuery);
+          const apiUrl = `https://api.itbook.store/1.0/search/${searchQueryEncoded}`;
+          const apiUrlUnencoded = `https://api.itbook.store/1.0/search/${searchQuery}`;
+          
+          console.log(`Trying search query: "${searchQuery}"`);
+          
+          // Call API directly
+          let response;
+          let queryData = null;
+          let querySuccess = false;
+          
+          try {
+            response = await fetch(apiUrl, {
+              method: 'GET',
+              headers: {
+                'Accept': 'application/json',
+              },
+            });
+            
+            if (!response.ok) {
+              throw new Error(`API returned ${response.status} ${response.statusText}`);
+            }
+            
+            queryData = await response.json();
+            console.log('Successfully fetched from API');
+            querySuccess = true;
+          } catch (fetchError) {
+            console.error('Direct API call failed:', fetchError);
+            // If CORS error, try with Vite proxy first, then public CORS proxy
+            if (fetchError.message.includes('CORS') || fetchError.message.includes('Failed to fetch')) {
+              console.log('CORS error detected, trying Vite proxy as fallback');
+              try {
+                const proxyUrl = `/api/search/${searchQueryEncoded}`;
+                response = await fetch(proxyUrl);
+                if (response.ok) {
+                  queryData = await response.json();
+                  console.log('Successfully fetched via Vite proxy fallback');
+                  querySuccess = true;
+                } else {
+                  throw new Error(`Proxy returned ${response.status}`);
+                }
+              } catch (proxyError) {
+                console.log('Vite proxy failed:', proxyError);
+                console.log('Trying public CORS proxy');
+                // Try public CORS proxy as last resort
+                try {
+                  // Use the properly encoded URL - the proxy will handle it correctly
+                  // We need to encode the entire URL for the query parameter
+                  const corsProxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(apiUrl)}`;
+                  console.log('Fetching from CORS proxy:', corsProxyUrl);
+                  response = await fetch(corsProxyUrl);
+                  console.log('CORS proxy response status:', response.status);
+                  if (response.ok) {
+                    const proxyData = await response.json();
+                    // allorigins.win wraps the response in a "contents" field
+                    if (proxyData.contents) {
+                      const text = proxyData.contents;
+                      // Check if response is HTML (error page)
+                      if (text.trim().startsWith('<!')) {
+                        throw new Error('Proxy returned HTML instead of JSON');
+                      }
+                      queryData = JSON.parse(text);
+                      console.log('Successfully fetched via public CORS proxy');
+                      querySuccess = true;
+                    } else {
+                      throw new Error('Unexpected proxy response format');
+                    }
+                  } else {
+                    throw new Error(`CORS proxy returned ${response.status}`);
+                  }
+                } catch (corsProxyError) {
+                  console.error('CORS proxy failed for this query:', corsProxyError);
+                  lastError = corsProxyError;
+                  // Continue to next query
+                }
+              }
+            } else {
+              lastError = fetchError;
+              // Continue to next query
+            }
+          }
+          
+          // If this query succeeded, use the data and break
+          if (querySuccess && queryData) {
+            data = queryData;
+            console.log(`Successfully fetched data using query: "${searchQuery}"`);
+            break;
+          }
+        }
+        
+        // If no query succeeded, show error
+        if (!data) {
+          setError('Unable to fetch similar books due to CORS restrictions. Please try again later.');
+          setSimilarBooks([]);
+          setLoading(false);
+          return;
+        }
+        
+        // If we got here, we successfully fetched data
+        console.log('API Response:', data);
+        
+        // Check if API returned an error
+        if (data.error && data.error !== "0") {
+          console.warn('API returned error:', data.error);
+          setSimilarBooks([]);
+          return;
+        }
+        
+        // Check if data.books exists and is an array
+        if (!data.books || !Array.isArray(data.books)) {
+          console.warn('Unexpected API response structure:', data);
+          setSimilarBooks([]);
+          return;
+        }
+        
+        // Filter out the current book by title and limit to 6 similar books
+        const filtered = data.books
+          .filter(b => {
+            // Check if book exists and has a title
+            if (!b || !b.title) return false;
+            // Filter out exact title matches (case insensitive)
+            return b.title.toLowerCase() !== book.title?.toLowerCase();
+          })
+          .slice(0, 6);
+        
+        console.log('Filtered similar books:', filtered);
+        
+        // Fetch detailed information for each similar book using ISBN13
+        const fetchBookDetails = async (isbn13) => {
+          try {
+            const detailUrl = `https://api.itbook.store/1.0/books/${isbn13}`;
+            let detailResponse;
+            
+            try {
+              detailResponse = await fetch(detailUrl);
+            } catch (directError) {
+              // Try Vite proxy
+              try {
+                const proxyUrl = `/api/books/${isbn13}`;
+                detailResponse = await fetch(proxyUrl);
+              } catch (proxyError) {
+                // Try public CORS proxy as last resort
+                const corsProxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(detailUrl)}`;
+                detailResponse = await fetch(corsProxyUrl);
+                if (detailResponse.ok) {
+                  const text = await detailResponse.text();
+                  if (!text.trim().startsWith('<!')) {
+                    return JSON.parse(text);
+                  }
+                }
+              }
+            }
+            
+            if (detailResponse && detailResponse.ok) {
+              const text = await detailResponse.text();
+              // Handle allorigins.win wrapper format
+              if (text.includes('"contents"')) {
+                const wrapper = JSON.parse(text);
+                return JSON.parse(wrapper.contents);
+              }
+              return JSON.parse(text);
+            }
+          } catch (err) {
+            // Silently fail - we'll use search results instead
+            console.warn(`Failed to fetch details for ISBN ${isbn13}:`, err);
+          }
+          return null;
+        };
+        
+        // If we have books from search, use them directly (details fetching is optional)
+        if (filtered.length > 0) {
+          // Try to fetch details, but don't fail if it doesn't work
+          try {
+            const booksWithDetails = await Promise.all(
+              filtered.map(async (similarBookItem) => {
+                if (similarBookItem.isbn13) {
+                  const details = await fetchBookDetails(similarBookItem.isbn13);
+                  // Merge search result with detailed information if available
+                  return details ? { ...similarBookItem, ...details } : similarBookItem;
+                }
+                return similarBookItem;
+              })
+            );
+            
+            console.log('Similar books with details:', booksWithDetails);
+            setSimilarBooks(booksWithDetails);
+          } catch (detailError) {
+            // If detail fetching fails, just use search results
+            console.warn('Failed to fetch details, using search results:', detailError);
+            setSimilarBooks(filtered);
+          }
+        } else {
+          setSimilarBooks([]);
+        }
+      } catch (err) {
+        console.error('Error fetching similar books:', err);
+        // More detailed error message
+        let errorMessage = 'Failed to load similar books';
+        if (err.message) {
+          errorMessage = err.message;
+        } else if (err.name === 'TypeError' && err.message.includes('fetch')) {
+          errorMessage = 'Network error: Unable to connect to the API. Please check your internet connection.';
+        }
+        setError(errorMessage);
+        setSimilarBooks([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchSimilarBooks();
+  }, [book]);
+
+  if (!book) return null;
+
+  const handleOverlayClick = (e) => {
+    if (e.target === e.currentTarget) {
+      onClose();
+    }
+  };
+
+  return (
+    <div className="book-details-overlay" onClick={handleOverlayClick}>
+      <div className="book-details-container">
+        <button className="close-details-button" onClick={onClose}>×</button>
+        
+        <div className="book-details-content">
+          <div className="book-details-main">
+            {book.image && (
+              <img src={book.image} alt={book.title} className="book-details-image" />
+            )}
+            <div className="book-details-info">
+              <h2>{book.title}</h2>
+              <p className="book-detail-item"><strong>Author:</strong> {book.author || 'Unknown Author'}</p>
+              {book.publisher && <p className="book-detail-item"><strong>Publisher:</strong> {book.publisher}</p>}
+              <p className="book-detail-item"><strong>Published:</strong> {book.published || '2025'}</p>
+              <p className="book-detail-item"><strong>Pages:</strong> {book.pages || 499}</p>
+              {book.price && <p className="book-detail-item"><strong>Price:</strong> {book.price}</p>}
+              {book.url && (
+                <a 
+                  href={book.url} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="external-link-button"
+                >
+                  View on IT Book Store
+                </a>
+              )}
+            </div>
+          </div>
+
+          <div className="similar-books-section">
+            <h3>Similar Books</h3>
+            {loading && <p className="loading-message">Loading similar books...</p>}
+            {error && <p className="error-message">Error loading similar books: {error}</p>}
+            {!loading && !error && similarBooks.length === 0 && (
+              <p className="no-similar-books">No similar books found.</p>
+            )}
+            {!loading && !error && similarBooks.length > 0 && (
+              <div className="similar-books-grid">
+                {similarBooks.map((similarBook, index) => (
+                  <div key={similarBook.isbn13 || index} className="similar-book-card">
+                    {similarBook.image && (
+                      <img src={similarBook.image} alt={similarBook.title || 'Book cover'} className="similar-book-image" />
+                    )}
+                    <h4>{similarBook.title || 'Untitled'}</h4>
+                    {similarBook.subtitle && <p className="similar-book-subtitle">{similarBook.subtitle}</p>}
+                    {similarBook.price && <p className="similar-book-price">{similarBook.price}</p>}
+                    {similarBook.url && (
+                      <a 
+                        href={similarBook.url} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="similar-book-link"
+                      >
+                        View Details
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LoanManagement({ books, loans, onAddLoan, onClearAllLoans }) {
   const [formData, setFormData] = useState({
     borrower: '',
     bookId: '',
@@ -297,7 +647,17 @@ function LoanManagement({ books, loans, onAddLoan }) {
       )}
       
       <div className="loaned-books-section">
-        <h3>Loaned Books</h3>
+        <div className="loaned-books-header">
+          <h3>Loaned Books</h3>
+          {loanedBooksList.length > 0 && (
+            <button 
+              className="clear-loans-button" 
+              onClick={onClearAllLoans}
+            >
+              Clear All Loans
+            </button>
+          )}
+        </div>
         {loanedBooksList.length > 0 ? (
           <div className="loaned-books-list">
             {loanedBooksList.map((loan, index) => (
@@ -350,6 +710,7 @@ function App() {
   const [bookToEdit, setBookToEdit] = useState(null)
   const [filterPublisher, setFilterPublisher] = useState('all')
   const [currentView, setCurrentView] = useState('books') // 'books' or 'loans'
+  const [selectedBookDetails, setSelectedBookDetails] = useState(null) // Book to show in details view
   
   // Load loans from localStorage or start with empty array
   const [loans, setLoans] = useState(() => {
@@ -471,6 +832,12 @@ function App() {
     setLoans([...loans, loanData]);
   };
 
+  // Handle clearing all loans
+  const handleClearAllLoans = () => {
+    setLoans([]);
+    localStorage.removeItem('loans');
+  };
+
   // Check if a book is on loan
   const isBookOnLoan = (bookId) => {
     return loans.some(loan => {
@@ -520,7 +887,12 @@ function App() {
       </header>
       
       <main className="main-content">
-        {currentView === 'books' ? (
+        {selectedBookDetails ? (
+          <BookDetails 
+            book={selectedBookDetails} 
+            onClose={() => setSelectedBookDetails(null)}
+          />
+        ) : currentView === 'books' ? (
           <div className="container">
             <div className="controls">
               <div className="add-book-card" onClick={handleAddBook}>
@@ -555,6 +927,7 @@ function App() {
                     isSelected={book.selected}
                     onSelect={() => handleBookSelect(book.id)}
                     isOnLoan={isBookOnLoan(book.id)}
+                    onViewDetails={() => setSelectedBookDetails(book)}
                   />
                 ))
               )}
@@ -566,6 +939,7 @@ function App() {
               books={books} 
               loans={loans} 
               onAddLoan={handleAddLoan}
+              onClearAllLoans={handleClearAllLoans}
             />
           </div>
         )}
